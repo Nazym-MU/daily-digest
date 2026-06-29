@@ -1,0 +1,25 @@
+name: Daily Digest
+
+on:
+  schedule:
+    # GitHub cron is UTC and has no DST. 13:00 UTC = 6:00 AM Pacific Daylight Time
+    # (most of the year). During Pacific Standard Time (~Nov–Mar) this fires at 5:00 AM.
+    # See the README for how to keep it at 6:00 AM year-round.
+    - cron: "0 13 * * *"
+  # Lets you run it on demand from the Actions tab to test.
+  workflow_dispatch:
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Send digest
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HN_COUNT: "5"
+        run: python3 digest.py
