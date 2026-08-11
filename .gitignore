@@ -11,6 +11,10 @@ env/
 .env.*
 !.env.example
 
+# Local paper cache — regenerated on demand, and machine-specific
+.paper_pool.json
+.seen_papers.json
+
 # OS / editor cruft
 .DS_Store
 .idea/

@@ -17,9 +17,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # The paper pool and seen-list must survive between runs, otherwise every
+      # morning starts cold and repeats the same papers. restore-keys lets today
+      # pick up yesterday's cache even though the key is date-stamped.
+      - name: Restore paper cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .paper_pool.json
+            .seen_papers.json
+          key: linalg-cache-${{ github.run_id }}
+          restore-keys: linalg-cache-
+
       - name: Send digest
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           HN_COUNT: "5"
+          # Optional but strongly recommended — see the README. Without it the
+          # bot shares a global anonymous quota and most requests get 429'd.
+          S2_API_KEY: ${{ secrets.S2_API_KEY }}
         run: python3 digest.py

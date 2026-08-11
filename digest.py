@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Send a daily digest to Telegram: the top LessWrong post of the day + latest Hacker News stories.
+"""Send a daily digest to Telegram: top LessWrong post, Hacker News stories, and
+linear algebra papers from arXiv.
 
-Reads three values from the environment:
+Reads these values from the environment:
   TELEGRAM_BOT_TOKEN  - from @BotFather
   TELEGRAM_CHAT_ID     - your chat with the bot
   HN_COUNT             - how many HN stories to include (optional, default 5)
+  S2_API_KEY           - Semantic Scholar key (optional but strongly recommended;
+                         the anonymous tier is heavily rate-limited)
 
 Run locally:   TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... python3 digest.py
 In CI:         values come from GitHub repo secrets (see README).
@@ -17,6 +20,8 @@ import urllib.request
 import urllib.error
 import json
 from datetime import datetime, timedelta, timezone
+
+from linalg import fetch_linalg_papers, format_papers_html
 
 LESSWRONG_GRAPHQL = "https://www.lesswrong.com/graphql"
 HN_TOPSTORIES = "https://hacker-news.firebaseio.com/v0/topstories.json"
@@ -128,7 +133,7 @@ def fetch_top_hn(count=5):
     return stories
 
 
-def build_message(lw, hn):
+def build_message(lw, hn, papers=None):
     """Format an HTML message for Telegram (parse_mode=HTML)."""
     def esc(s):
         return html.escape(str(s))
@@ -155,6 +160,9 @@ def build_message(lw, hn):
             )
     else:
         lines.append("• (couldn't fetch stories today)")
+
+    lines.append("")
+    lines.extend(format_papers_html(papers or []))
 
     return "\n".join(lines)
 
@@ -183,15 +191,19 @@ def main():
         sys.exit(1)
 
     hn_count = int(os.environ.get("HN_COUNT", "5"))
+    # Rotates which topics get queried, so a stable high-citation corpus still
+    # yields a different slice each day.
+    day_index = int(datetime.now(timezone.utc).strftime("%j"))
 
     lw = fetch_top_lesswrong_post()
     hn = fetch_top_hn(hn_count)
+    papers = fetch_linalg_papers(day_index=day_index)
 
-    if lw is None and not hn:
-        print("Both sources failed — not sending an empty digest.", file=sys.stderr)
+    if lw is None and not hn and not papers:
+        print("All sources failed — not sending an empty digest.", file=sys.stderr)
         sys.exit(1)
 
-    message = build_message(lw, hn)
+    message = build_message(lw, hn, papers)
     send_telegram(token, chat_id, message)
     print("Digest sent.")
 
