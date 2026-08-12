@@ -38,4 +38,10 @@ jobs:
           # Optional but strongly recommended — see the README. Without it the
           # bot shares a global anonymous quota and most requests get 429'd.
           S2_API_KEY: ${{ secrets.S2_API_KEY }}
+          # Reads the ticket board out of the Obsidian vault repo. Provided
+          # automatically by Actions; only raises the API rate limit (60/hr
+          # anonymous vs 1000/hr), since the vault repo is public.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TICKETS_REPO: "Nazym-MU/NS162"
+          TICKETS_PATH: "Downloads/2026/Tickets"
         run: python3 digest.py

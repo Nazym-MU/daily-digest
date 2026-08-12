@@ -22,6 +22,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from linalg import fetch_linalg_papers, format_papers_html
+from tickets import fetch_tickets, format_tickets_html
 
 LESSWRONG_GRAPHQL = "https://www.lesswrong.com/graphql"
 HN_TOPSTORIES = "https://hacker-news.firebaseio.com/v0/topstories.json"
@@ -133,13 +134,19 @@ def fetch_top_hn(count=5):
     return stories
 
 
-def build_message(lw, hn, papers=None):
+def build_message(lw, hn, papers=None, tickets=None):
     """Format an HTML message for Telegram (parse_mode=HTML)."""
     def esc(s):
         return html.escape(str(s))
 
     today = datetime.now(timezone.utc).strftime("%A, %B %d")
     lines = [f"<b>📰 Daily Digest — {esc(today)}</b>", ""]
+
+    # Tickets go first. They are the thing that is easy to forget, and burying them
+    # under the news is how the board became invisible in the first place.
+    if tickets is not None:
+        lines.extend(format_tickets_html(tickets))
+        lines.append("")
 
     lines.append("<b>🧠 Top of LessWrong</b>")
     if lw:
@@ -167,19 +174,53 @@ def build_message(lw, hn, papers=None):
     return "\n".join(lines)
 
 
+# Telegram rejects any single message over 4096 characters outright.
+TELEGRAM_LIMIT = 4096
+
+
+def split_message(text, limit=TELEGRAM_LIMIT):
+    """Split on blank lines so each chunk fits, keeping HTML tags balanced.
+
+    Sections are separated by blank lines and no tag spans one, so splitting there
+    never leaves an unclosed <b> or <a>, which would make Telegram reject the chunk.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks, current = [], ""
+    for block in text.split("\n\n"):
+        candidate = f"{current}\n\n{block}" if current else block
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        # A single block over the limit is pathological; hard-cut it rather than
+        # dropping it silently.
+        while len(block) > limit:
+            chunks.append(block[:limit])
+            block = block[limit:]
+        current = block
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def send_telegram(token, chat_id, text):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = urllib.parse.urlencode({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": "true",
-    }).encode("utf-8")
-    raw = _get(url, data=payload,
-               headers={"Content-Type": "application/x-www-form-urlencoded"})
-    resp = json.loads(raw)
-    if not resp.get("ok"):
-        raise RuntimeError(f"Telegram API error: {resp}")
+    resp = None
+    for chunk in split_message(text):
+        payload = urllib.parse.urlencode({
+            "chat_id": chat_id,
+            "text": chunk,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true",
+        }).encode("utf-8")
+        raw = _get(url, data=payload,
+                   headers={"Content-Type": "application/x-www-form-urlencoded"})
+        resp = json.loads(raw)
+        if not resp.get("ok"):
+            raise RuntimeError(f"Telegram API error: {resp}")
     return resp
 
 
@@ -198,12 +239,13 @@ def main():
     lw = fetch_top_lesswrong_post()
     hn = fetch_top_hn(hn_count)
     papers = fetch_linalg_papers(day_index=day_index)
+    tickets = fetch_tickets()
 
-    if lw is None and not hn and not papers:
+    if lw is None and not hn and not papers and not tickets:
         print("All sources failed — not sending an empty digest.", file=sys.stderr)
         sys.exit(1)
 
-    message = build_message(lw, hn, papers)
+    message = build_message(lw, hn, papers, tickets)
     send_telegram(token, chat_id, message)
     print("Digest sent.")
 

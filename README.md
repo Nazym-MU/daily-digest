@@ -2,6 +2,7 @@
 
 Sends you a Telegram message every morning with:
 
+- 📋 Your **open tickets**, read live from the Obsidian vault's Kanban board
 - 🧠 The **top LessWrong post** of the last 24 hours (highest karma)
 - 🍊 The **top 5 Hacker News** stories right now
 - 🔢 High-citation, peer-reviewed **linear algebra papers** across five topic buckets
@@ -166,6 +167,49 @@ Preview without sending to Telegram (optionally pass a day index):
 python3 linalg.py       # today's rotation
 python3 linalg.py 5     # what day 5 of the rotation would pick
 ```
+
+## The tickets section
+
+Reads the `Tickets/` folder of the Obsidian vault straight off GitHub, so the digest
+shows the same board the 3D site publishes. Nothing is synced and no copy is kept.
+
+Two filters decide what appears, and both matter:
+
+- **`visibility: public` only.** Private tickets are skipped even if they somehow got
+  committed. This is a second line of defence — the real one is not committing them.
+- **`status: doing` or `todo` only.** `backlog` is excluded on purpose. The vault
+  convention is that everything outside the one active milestone sits in backlog, so
+  including it would rebuild the forty-item wall the board exists to avoid.
+
+Output is capped for the same reason. Telegram rejects any message over 4096
+characters, and the full board with every `done_when` runs to ~6100 on its own. So
+each project shows at most `TICKETS_PER_PROJECT` (default 3) with the rest counted as
+`+N more`, and `done_when` is printed only for what is actually in progress (`▶`).
+
+Anything open since `TICKETS_STALE_DAYS` (default 14) or longer gets flagged at the
+bottom. Note this measures the **`created` date**, not when the ticket entered its
+current status, because the schema has no transition timestamp. A ticket created long
+ago and started yesterday will still be flagged.
+
+Config, all optional, in `.github/workflows/digest.yml`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TICKETS_REPO` | `Nazym-MU/NS162` | Repo holding the vault |
+| `TICKETS_PATH` | `Downloads/2026/Tickets` | Folder inside that repo |
+| `TICKETS_PER_PROJECT` | `3` | Max tickets listed per project |
+| `TICKETS_STALE_DAYS` | `14` | Age at which a ticket is flagged |
+| `GITHUB_TOKEN` | (Actions provides it) | Raises the API limit to 1000/hr |
+
+Preview it without sending anything:
+
+```bash
+python3 tickets.py
+```
+
+**The one failure mode:** the digest reads GitHub, not your laptop, so a ticket you
+edited but did not push will not show. That is the tradeoff for a reminder that
+arrives whether or not the laptop is open.
 
 ## Customizing
 
