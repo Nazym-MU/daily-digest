@@ -22,7 +22,6 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from linalg import fetch_linalg_papers, format_papers_html
-from tickets import fetch_tickets, format_tickets_html
 
 LESSWRONG_GRAPHQL = "https://www.lesswrong.com/graphql"
 HN_TOPSTORIES = "https://hacker-news.firebaseio.com/v0/topstories.json"
@@ -134,19 +133,13 @@ def fetch_top_hn(count=5):
     return stories
 
 
-def build_message(lw, hn, papers=None, tickets=None):
+def build_message(lw, hn, papers=None):
     """Format an HTML message for Telegram (parse_mode=HTML)."""
     def esc(s):
         return html.escape(str(s))
 
     today = datetime.now(timezone.utc).strftime("%A, %B %d")
     lines = [f"<b>📰 Daily Digest — {esc(today)}</b>", ""]
-
-    # Tickets go first. They are the thing that is easy to forget, and burying them
-    # under the news is how the board became invisible in the first place.
-    if tickets is not None:
-        lines.extend(format_tickets_html(tickets))
-        lines.append("")
 
     lines.append("<b>🧠 Top of LessWrong</b>")
     if lw:
@@ -239,13 +232,12 @@ def main():
     lw = fetch_top_lesswrong_post()
     hn = fetch_top_hn(hn_count)
     papers = fetch_linalg_papers(day_index=day_index)
-    tickets = fetch_tickets()
 
-    if lw is None and not hn and not papers and not tickets:
+    if lw is None and not hn and not papers:
         print("All sources failed — not sending an empty digest.", file=sys.stderr)
         sys.exit(1)
 
-    message = build_message(lw, hn, papers, tickets)
+    message = build_message(lw, hn, papers)
     send_telegram(token, chat_id, message)
     print("Digest sent.")
 
