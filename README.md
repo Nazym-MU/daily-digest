@@ -6,6 +6,8 @@ Sends you a Telegram message every morning with:
 - 🍊 The **top 5 Hacker News** stories right now
 - 🔢 High-citation, peer-reviewed **linear algebra papers** across five topic buckets
   (numerical, ML, graphics, quantum, theory)
+- 📍 **New Bay Area events on Luma** matching my interests (3D, world models, math,
+  AI for science, reading groups), but only on days when there are new ones
 
 Runs on **GitHub Actions** (free, always-on — no laptop or server needed). Pure Python
 standard library, so there's nothing to `pip install`.
@@ -165,6 +167,31 @@ Preview without sending to Telegram (optionally pass a day index):
 ```bash
 python3 linalg.py       # today's rotation
 python3 linalg.py 5     # what day 5 of the rotation would pick
+```
+
+## The Luma events section
+
+Lives in `events.py`. Events come from Luma's public **discover** feed
+(`api.lu.ma/discover/get-paginated-events`), from the AI, Tech, and San Francisco
+feeds, pinned to SF coordinates. Luma's search endpoint needs a signed-in session
+and the official API only covers calendars you manage, so neither works from CI.
+
+- **Matching** is a keyword pass over the event name and host calendar name, since
+  the feed has no descriptions. Edit `TOPICS` to change it. Generic mixers and happy
+  hours are left out on purpose, because two weeks of the feed had ~90 of them.
+- **Filters:** in-person, within `EVENTS_MAX_KM` (70) of SF, starting in the next
+  `EVENTS_WINDOW_DAYS` (14). At most `EVENTS_MAX` (6) per digest, soonest first.
+  Matches that don't fit roll over to the next day.
+- **Only new events:** sent ids go in `.seen_events.json`, cached between runs.
+  They're recorded only after Telegram accepts the message. With nothing new, the
+  section is omitted entirely.
+- **Rate limits:** heavy polling gets a 403 `additional-verification-required`.
+  One run makes ~10 requests, which is fine, and a 403 just means no section that day.
+
+Preview without sending (ignores the seen-cache):
+
+```bash
+python3 events.py
 ```
 
 ## Customizing

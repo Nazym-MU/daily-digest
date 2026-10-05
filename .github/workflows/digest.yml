@@ -30,6 +30,15 @@ jobs:
           key: linalg-cache-${{ github.run_id }}
           restore-keys: linalg-cache-
 
+      # Its own cache entry: adding a path to the one above would change that
+      # cache's version and throw away the banked paper pool.
+      - name: Restore Luma seen-events
+        uses: actions/cache@v4
+        with:
+          path: .seen_events.json
+          key: events-cache-${{ github.run_id }}
+          restore-keys: events-cache-
+
       - name: Send digest
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

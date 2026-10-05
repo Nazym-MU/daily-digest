@@ -14,6 +14,7 @@ env/
 # Local paper cache — regenerated on demand, and machine-specific
 .paper_pool.json
 .seen_papers.json
+.seen_events.json
 
 # OS / editor cruft
 .DS_Store
