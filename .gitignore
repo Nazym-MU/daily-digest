@@ -15,6 +15,7 @@ env/
 .paper_pool.json
 .seen_papers.json
 .seen_events.json
+.seen_jobs.json
 
 # OS / editor cruft
 .DS_Store

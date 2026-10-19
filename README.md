@@ -8,6 +8,9 @@ Sends you a Telegram message every morning with:
   (numerical, ML, graphics, quantum, theory)
 - 📍 **New Bay Area events on Luma** matching my interests (3D, world models, math,
   AI for science, reading groups), but only on days when there are new ones
+- 🧮 **New intern / new-grad jobs** on the SWE × math boundary (geometry, simulation,
+  graphics, GNC, optimization, formal methods, crypto), from company job boards and
+  HN "Who is hiring?", also only when there are new ones
 
 Runs on **GitHub Actions** (free, always-on — no laptop or server needed). Pure Python
 standard library, so there's nothing to `pip install`.
@@ -75,16 +78,14 @@ once. If the message lands, you're done — it'll now run every day automaticall
 
 ## About the schedule
 
-The workflow runs at `0 13 * * *` — **13:00 UTC**, which is **6:00 AM Pacific Daylight
-Time**. Two things to know:
+The workflow runs at `17 11 * * *` — **11:17 UTC**, which is 4:17 AM Pacific Daylight
+Time (3:17 AM in winter; GitHub cron has no daylight saving).
 
-- **GitHub cron has no daylight saving.** During Pacific *Standard* Time (roughly
-  November–March) 13:00 UTC is **5:00 AM** Pacific. If you want a steady 6:00 AM
-  year-round, change the cron to `0 14 * * *` for the winter months, or just accept the
-  one-hour seasonal drift.
-- **GitHub may delay scheduled runs** by a few minutes (sometimes more) during peak
-  load. For a morning digest that's harmless. If you ever need exact timing, a tiny
-  cloud VM with real cron is the alternative.
+That's deliberately early. **GitHub delays scheduled runs**, and not by minutes: when
+the cron was `0 13 * * *` (6 AM), runs in October 2026 started anywhere from 16:00 to
+19:40 UTC, so the digest arrived mid-morning. Starting early and off the top of the
+hour (when the queue is busiest) means it is waiting when you wake up. If you ever
+need exact timing, a tiny cloud VM with real cron is the alternative.
 
 ## The linear algebra section
 
@@ -192,6 +193,45 @@ Preview without sending (ignores the seen-cache):
 
 ```bash
 python3 events.py
+```
+
+## The jobs section
+
+Lives in `jobs.py`. LinkedIn has no public jobs API (and scraping it breaks its terms),
+so jobs come straight from company boards: most companies post through Greenhouse,
+Lever or Ashby, which all serve an anonymous JSON feed. The watchlist is `COMPANIES`
+— about 60 companies in CAD/simulation, formal math, ZK, graphics, autonomy,
+aerospace, quantum and AI-for-science. Each entry is `(name, ats, slug, core)`;
+the slug is the part after the board's domain, e.g. `jobs.ashbyhq.com/<slug>`.
+
+A posting is kept when:
+
+- the **title** says intern / co-op / new grad / entry level / junior (or Ashby tags
+  it Intern), and nothing senior, PhD, master's or MBA;
+- it's an engineering or research title, not sales, ops, hardware build or firmware;
+- it's **mathy**: at broad companies the title must name the math (GNC, simulation,
+  computational, controls, kernel, 3D, research…), and the title or description must
+  hit a `TOPICS` entry. Companies marked `core` are math-native, so any technical
+  early-career role there counts;
+- the description doesn't **require a PhD or master's**;
+- it's in the **US** (or has no location). "Remote" alone doesn't count, since it
+  often means remote within Europe.
+
+Roles posted once per season or per city are collapsed into one line. Bay Area roles
+come first, then newest. At most `JOBS_MAX` (8) board jobs plus `JOBS_MAX_HN` (3) HN
+posts per digest; the rest roll over to the next day.
+
+The HN source is the latest monthly "Who is hiring?" thread (via the Algolia API).
+A comment is kept when it mentions interns / new grads / junior roles, at least two
+distinct topic terms, isn't trading, and its header line isn't outside the US.
+
+Sent ids go in `.seen_jobs.json`, cached between runs like the events cache, so each
+job appears once. A board that fails just logs and is skipped.
+
+Preview without sending (ignores the seen-cache; raise the caps to see everything):
+
+```bash
+JOBS_MAX=200 JOBS_MAX_HN=50 python3 jobs.py
 ```
 
 ## Customizing

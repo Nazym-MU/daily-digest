@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Send a daily digest to Telegram: top LessWrong post, Hacker News stories,
-linear algebra papers from Semantic Scholar, and new Luma events (only when there
-are some).
+linear algebra papers from Semantic Scholar, and new Luma events and jobs (each
+only when there are some).
 
 Reads these values from the environment:
   TELEGRAM_BOT_TOKEN  - from @BotFather
@@ -23,6 +23,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from events import fetch_events, format_events_html, mark_seen as mark_events_seen
+from jobs import fetch_jobs, format_jobs_html, mark_seen as mark_jobs_seen
 from linalg import fetch_linalg_papers, format_papers_html
 
 LESSWRONG_GRAPHQL = "https://www.lesswrong.com/graphql"
@@ -135,7 +136,7 @@ def fetch_top_hn(count=5):
     return stories
 
 
-def build_message(lw, hn, papers=None, events=None):
+def build_message(lw, hn, papers=None, events=None, jobs=None):
     """Format an HTML message for Telegram (parse_mode=HTML)."""
     def esc(s):
         return html.escape(str(s))
@@ -170,6 +171,10 @@ def build_message(lw, hn, papers=None, events=None):
     if events:
         lines.append("")
         lines.extend(format_events_html(events))
+
+    if jobs:
+        lines.append("")
+        lines.extend(format_jobs_html(jobs))
 
     return "\n".join(lines)
 
@@ -240,15 +245,17 @@ def main():
     hn = fetch_top_hn(hn_count)
     papers = fetch_linalg_papers(day_index=day_index)
     events = fetch_events()
+    jobs = fetch_jobs()
 
     if lw is None and not hn and not papers:
         print("All sources failed — not sending an empty digest.", file=sys.stderr)
         sys.exit(1)
 
-    message = build_message(lw, hn, papers, events)
+    message = build_message(lw, hn, papers, events, jobs)
     send_telegram(token, chat_id, message)
-    # Only after a successful send, so a failed run doesn't swallow events.
+    # Only after a successful send, so a failed run doesn't swallow events or jobs.
     mark_events_seen(events)
+    mark_jobs_seen(jobs)
     print("Digest sent.")
 
 
