@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Send a daily digest to Telegram: top LessWrong post, Hacker News stories,
-linear algebra papers from Semantic Scholar, and new Luma events and jobs (each
+one heavily cited linear algebra paper from Semantic Scholar, and new Luma events and jobs (each
 only when there are some).
 
 Reads these values from the environment:

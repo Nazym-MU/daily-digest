@@ -4,8 +4,9 @@ Sends you a Telegram message every morning with:
 
 - 🧠 The **top LessWrong post** of the last 24 hours (highest karma)
 - 🍊 The **top 5 Hacker News** stories right now
-- 🔢 High-citation, peer-reviewed **linear algebra papers** across five topic buckets
-  (numerical, ML, graphics, quantum, theory)
+- 📄 **One paper of the day**: a heavily cited, peer-reviewed linear algebra paper with a
+  one-line summary, rotating through five topic buckets (numerical, ML, graphics,
+  quantum, theory)
 - 📍 **New Bay Area events on Luma** matching my interests (3D, world models, math,
   AI for science, reading groups), but only on days when there are new ones
 - 🧮 **New intern / new-grad jobs** on the SWE × math boundary (geometry, simulation,
@@ -112,16 +113,22 @@ actually read and built on, at the cost of it not being from this week.
 
 ### What gets through
 
-Every paper must clear a per-bucket citation floor **and** have a real peer-reviewed
-venue (anything whose venue is `arXiv.org` is dropped as an unvetted preprint).
+The digest sends **one paper a day**, not a list. Every candidate must clear a high
+per-bucket citation floor **and** have a real peer-reviewed venue (anything whose
+venue is `arXiv.org` is dropped as an unvetted preprint). The floor is also passed to
+the search as `minCitationCount`, so every result is a candidate.
 
-| Bucket | Slots | Min citations | Example of what lands here |
-|--------|-------|---------------|----------------------------|
-| `numerical` | 2 | 25 | *Randomized numerical linear algebra: Foundations and algorithms* — 528 cit, Acta Numerica |
-| `ml` | 1 | 40 | *LoRA: Low-Rank Adaptation of LLMs* — 21833 cit, ICLR |
-| `graphics` | 1 | 20 | *3D Gaussian Splatting for Real-Time Radiance Fields* — 9769 cit, ACM TOG |
-| `quantum` | 1 | 15 | *Hybrid quantum linear equation algorithm* — 82 cit, Scientific Reports |
-| `theory` | 1 | 20 | Matrix analysis, spectral graph theory, random matrix theory |
+| Bucket | Min citations | Example of what lands here |
+|--------|---------------|----------------------------|
+| `numerical` | 200 | *Randomized numerical linear algebra: Foundations and algorithms* — 528 cit, Acta Numerica |
+| `ml` | 1000 | *LoRA: Low-Rank Adaptation of LLMs* — 21833 cit, ICLR |
+| `graphics` | 300 | *3D Gaussian Splatting for Real-Time Radiance Fields* — 9769 cit, ACM TOG |
+| `quantum` | 150 | Quantum linear systems, QSVT, block encodings |
+| `theory` | 200 | Matrix analysis, spectral graph theory, random matrix theory |
+
+The day-of-year picks the bucket, and the most-cited unseen paper in it is sent. If that
+bucket has nothing above its floor, the most-cited qualifying paper from any bucket
+stands in. Semantic Scholar's one-sentence TLDR is added underneath when it has one.
 
 Floors differ per bucket because quantum LA and graphics are smaller fields that cite
 less in absolute terms — a flat threshold would quietly starve them.
@@ -131,8 +138,8 @@ less in absolute terms — a flat threshold would quietly starve them.
 A high-citation corpus is stable, so querying the same topics daily would surface the
 same papers forever. Two mechanisms prevent that:
 
-1. **Topic rotation** — each bucket holds several queries; the day-of-year picks which
-   one runs, so Monday and Tuesday explore different slices.
+1. **Rotation**: buckets take turns day by day, and each bucket holds several queries;
+   the day-of-year picks which one runs.
 2. **Seen-cache** (`.seen_papers.json`) — papers already sent are skipped, and dropped
    from the pool so it advances to deeper cuts.
 
@@ -149,7 +156,7 @@ Two things address this:
   Add it as the repo secret `S2_API_KEY`. This gives you a private quota and makes the
   problem go away.
 - **The paper pool** (`.paper_pool.json`) — a reservoir of vetted papers, refilled
-  whenever the API does answer. A rate-limited morning still sends a full digest from
+  whenever the API does answer. On a rate-limited morning the paper still comes from
   the bank. The GitHub Actions cache step persists it between runs.
 
 Without a key the bot still works, but the pool takes several successful runs to fill,
@@ -158,10 +165,9 @@ so expect thin digests for the first few days.
 ### Tuning
 
 - **Topics:** edit `TOPICS` in `linalg.py` — plain search strings, easy to extend.
-- **Stricter:** raise `MIN_CITATIONS`. Setting `numerical` to 100+ gets you only
-  landmark papers.
+- **Stricter or looser:** `MIN_CITATIONS`. Lowering it widens the pool but lets in
+  less established work.
 - **Different era:** `LINALG_YEAR_RANGE` (default `2015-2026`).
-- **More per bucket:** `BUCKET_SLOTS`.
 
 Preview without sending to Telegram (optionally pass a day index):
 

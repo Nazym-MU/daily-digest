@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch high-citation linear algebra papers for the daily digest.
+"""Pick one heavily cited linear algebra paper a day for the digest.
 
 Source is the **Semantic Scholar** API rather than arXiv, deliberately.
 
@@ -13,10 +13,10 @@ Semantic Scholar exposes what arXiv lacks: real citation counts and peer-reviewe
 venue names. This module trades freshness for reliability — every paper here has
 been read and cited by other researchers.
 
-Because a high-citation corpus is stable, querying the same topics daily would
-show the same papers forever. Two mechanisms keep the digest varied:
-  1. Topic rotation — each day queries a different slice of topics (day-of-year).
-  2. A seen-cache — papers already sent are skipped until the cache is rotated.
+One paper a day, not a list: the digest is read, not studied, so it sends the
+single most-cited unseen paper from today's bucket. Buckets take turns by
+day-of-year, so ML (which out-cites everything else) doesn't win every morning.
+A seen-cache keeps a paper from being sent twice.
 """
 
 import json
@@ -96,15 +96,6 @@ TOPICS = {
     ],
 }
 
-# How many papers each bucket contributes per digest.
-BUCKET_SLOTS = {
-    "numerical": 2,
-    "ml": 1,
-    "graphics": 1,
-    "quantum": 1,
-    "theory": 1,
-}
-
 BUCKET_LABELS = {
     "numerical": "applied / numerical",
     "ml": "ML",
@@ -113,15 +104,16 @@ BUCKET_LABELS = {
     "theory": "theory",
 }
 
-# A paper must clear this to count as "proven". Tuned per bucket: quantum LA and
-# graphics are smaller fields that cite less in absolute terms than ML, so a flat
-# threshold would silently starve them.
+# A paper must clear this to be the paper of the day. Set high on purpose: with one
+# pick a day, it should be work a whole field has built on. Tuned per bucket because
+# quantum LA and graphics are smaller fields that cite less in absolute terms than
+# ML, so a flat threshold would silently starve them.
 MIN_CITATIONS = {
-    "numerical": 25,
-    "ml": 40,
-    "graphics": 20,
-    "quantum": 15,
-    "theory": 20,
+    "numerical": 200,
+    "ml": 1000,
+    "graphics": 300,
+    "quantum": 150,
+    "theory": 200,
 }
 
 # Only consider work from this year onward — old enough to be cited, recent
@@ -225,7 +217,7 @@ def _is_real_venue(venue):
     return (venue or "").strip().lower() not in NON_VENUES
 
 
-def search_topic(query, limit=80):
+def search_topic(query, limit=80, min_citations=0):
     """One Semantic Scholar search. Returns [] on failure rather than raising."""
     params = {
         "query": query,
@@ -233,6 +225,10 @@ def search_topic(query, limit=80):
         "limit": limit,
         "year": YEAR_RANGE,
     }
+    if min_citations:
+        # Filter server-side so all `limit` results are candidates, not just the
+        # few highly cited ones that happen to rank high on relevance.
+        params["minCitationCount"] = min_citations
     url = f"{S2_SEARCH}?{urllib.parse.urlencode(params)}"
     try:
         raw = _get(url)
@@ -273,6 +269,7 @@ def _clean(paper, bucket):
 
     return {
         "id": _paper_id(paper),
+        "s2_id": paper.get("paperId"),
         "title": " ".join((paper.get("title") or "(untitled)").split()),
         "year": paper.get("year"),
         "citations": paper.get("citationCount") or 0,
@@ -297,7 +294,7 @@ def refill_pool(pool, day_index, seen):
         known = {p["id"] for p in pool.get(bucket, [])}
 
         for query in queries:
-            results = search_topic(query)
+            results = search_topic(query, min_citations=floor)
             if results:
                 fetched_any = True
             for raw in results:
@@ -319,53 +316,76 @@ def refill_pool(pool, day_index, seen):
     return fetched_any
 
 
-def fetch_linalg_papers(day_index=0, slots=None, skip_seen=True):
-    """Return proven, high-citation papers across buckets.
+def fetch_tldr(paper):
+    """Semantic Scholar's one-sentence summary, or None. Best-effort: one extra
+    request for the one paper we send, never worth failing the digest over."""
+    s2_id = paper.get("s2_id")
+    if not s2_id:
+        return None  # banked before s2_id was stored
+    try:
+        raw = _get(f"https://api.semanticscholar.org/graph/v1/paper/{s2_id}?fields=tldr", retries=2)
+        return ((json.loads(raw).get("tldr") or {}).get("text") or "").strip() or None
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:
+        print(f"[s2] tldr failed: {e}", file=sys.stderr)
+        return None
 
-    Serves from a banked pool and refills it opportunistically, so a rate-limited
-    morning still produces a digest. Returns [] only if the pool is empty *and*
-    the API is unreachable.
+
+def _candidates(pool, bucket, seen):
+    floor = MIN_CITATIONS.get(bucket, 200)
+    return [
+        p for p in pool.get(bucket, [])
+        if p["id"] not in seen and p["citations"] >= floor
+    ]
+
+
+def fetch_linalg_papers(day_index=0, skip_seen=True):
+    """Return a one-item list: today's paper, or [] if nothing qualifies.
+
+    Today's bucket comes from the day-of-year; if it has nothing above its floor,
+    the most-cited qualifying paper from any bucket stands in. Serves from a
+    banked pool and refills it opportunistically, so a rate-limited morning still
+    gets a paper.
     """
-    slots = slots or BUCKET_SLOTS
     seen = set(load_seen()) if skip_seen else set()
 
     pool = load_pool()
+    # Papers banked under the old, lower floors would otherwise fill the pool to
+    # POOL_TARGET and stop it from ever refilling with ones that qualify.
+    pool = {b: _candidates(pool, b, seen) for b in pool}
     refill_pool(pool, day_index, seen)
 
-    picked = []
-    newly_seen = []
+    buckets = list(TOPICS)
+    today = buckets[day_index % len(buckets)]
+    choices = _candidates(pool, today, seen) or sorted(
+        (p for b in buckets for p in _candidates(pool, b, seen)),
+        key=lambda p: p["citations"],
+        reverse=True,
+    )
+    if not choices:
+        save_pool(pool)
+        return []
 
-    for bucket in TOPICS:
-        want = slots.get(bucket, 0)
-        if want <= 0:
-            continue
-
-        available = [p for p in pool.get(bucket, []) if p["id"] not in seen]
-        chosen = available[:want]
-        picked.extend(chosen)
-
-        chosen_ids = {p["id"] for p in chosen}
-        newly_seen.extend(chosen_ids)
-        # Drop what we just sent so the pool naturally advances to deeper cuts.
-        pool[bucket] = [p for p in pool.get(bucket, []) if p["id"] not in chosen_ids]
-
+    paper = max(choices, key=lambda p: p["citations"])
+    # Drop it from the pool so the bucket advances to the next landmark.
+    pool[paper["bucket"]] = [p for p in pool[paper["bucket"]] if p["id"] != paper["id"]]
     save_pool(pool)
-    if skip_seen and newly_seen:
-        save_seen(load_seen() + newly_seen)
+    if skip_seen:
+        save_seen(load_seen() + [paper["id"]])
 
-    return picked
+    paper["tldr"] = fetch_tldr(paper)
+    return [paper]
 
 
 def format_papers_html(papers):
-    """Render the linear algebra section for Telegram (parse_mode=HTML)."""
+    """Render the paper-of-the-day section for Telegram (parse_mode=HTML)."""
     import html
 
     def esc(s):
         return html.escape(str(s))
 
-    lines = ["<b>🔢 Linear Algebra</b>"]
+    lines = ["<b>📄 Paper of the Day</b>"]
     if not papers:
-        lines.append("• (no papers today — source unavailable)")
+        lines.append("• (no paper today — source unavailable)")
         return lines
 
     for p in papers:
@@ -379,7 +399,7 @@ def format_papers_html(papers):
         if len(venue) > 42:
             venue = venue[:39].rstrip() + "…"
 
-        meta = [f"{p['citations']} citations"]
+        meta = [f"{p['citations']:,} citations"]
         if venue:
             meta.append(venue)
         if p["year"]:
@@ -388,6 +408,8 @@ def format_papers_html(papers):
 
         lines.append(f'• <a href="{esc(p["url"])}">{esc(p["title"])}</a>')
         lines.append(f'  <i>{esc(byline)} · {esc(" · ".join(m for m in meta if m))}</i>')
+        if p.get("tldr"):
+            lines.append(f'  {esc(p["tldr"])}')
 
     return lines
 
@@ -400,4 +422,5 @@ if __name__ == "__main__":
     for paper in found:
         print(f"[{paper['bucket']:>9}] {paper['citations']:>5} cit · {paper['year']} · {paper['venue'][:40]}")
         print(f"            {paper['title'][:76]}")
-        print(f"            {paper['url']}\n")
+        print(f"            {paper['url']}")
+        print(f"            {paper.get('tldr') or ''}\n")
