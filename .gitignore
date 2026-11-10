@@ -16,9 +16,13 @@ env/
 .seen_papers.json
 .seen_events.json
 .seen_jobs.json
+.seen_partiful.json
 
 # OS / editor cruft
 .DS_Store
 .idea/
 .vscode/
 *.swp
+
+# Interactive listener state (job records, downloaded PDFs)
+.listener/

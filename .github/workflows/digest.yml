@@ -48,6 +48,14 @@ jobs:
           key: jobs-cache-${{ github.run_id }}
           restore-keys: jobs-cache-
 
+      # Same reason again: its own entry.
+      - name: Restore seen Partiful events
+        uses: actions/cache@v4
+        with:
+          path: .seen_partiful.json
+          key: partiful-cache-${{ github.run_id }}
+          restore-keys: partiful-cache-
+
       - name: Send digest
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

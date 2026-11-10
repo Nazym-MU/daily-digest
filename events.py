@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,6 +41,7 @@ MAX_DISTANCE_KM = float(os.environ.get("EVENTS_MAX_KM", "70"))  # SF to San Jose
 WINDOW_DAYS = int(os.environ.get("EVENTS_WINDOW_DAYS", "14"))
 MAX_EVENTS = int(os.environ.get("EVENTS_MAX", "6"))
 MAX_PAGES = 12  # per source, 50 events a page
+REQUEST_PAUSE = float(os.environ.get("LUMA_PAUSE", "1.5"))
 
 # Each feed is paginated separately and the results are merged by event id.
 SOURCES = [
@@ -82,16 +84,19 @@ TOPIC_EMOJI = {
 
 
 def _get(params):
+    # Luma answers a burst of ~40 requests with a temporary 403
+    # (auth/additional-verification-required); a pause keeps the run under that.
+    time.sleep(REQUEST_PAUSE)
     url = f"{DISCOVER_URL}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _fetch_source(source, until):
+def _fetch_source(source, until, max_pages=MAX_PAGES):
     """All entries from one feed, stopping once events start past `until`."""
     entries, cursor = [], None
-    for _ in range(MAX_PAGES):
+    for _ in range(max_pages):
         params = {**source, "latitude": HOME_LAT, "longitude": HOME_LNG,
                   "pagination_limit": 50}
         if cursor:
@@ -212,8 +217,117 @@ def format_events_html(events):
     return lines
 
 
+
+# ---------------------------------------------------------------------------
+# Life outside tech: Luma's non-tech categories near SF (sports, running, books,
+# games, food, arts). Same feed and seen-cache as above, its own digest section.
+# These categories are small (a page or two of SF events each), so ~8 requests.
+
+LIFE_SOURCES = [  # (category id, emoji), in priority order
+    ("cat-0Km9ZnuBjFAjwFl", "🏐"),  # Fitness: tennis, climbing, soccer...
+    ("cat-running", "🏃"),
+    ("cat-books", "📚"),
+    ("cat-games", "🎲"),
+    ("cat-fooddrink", "🍝"),
+    ("cat-AzVAf6VmE9JEre4", "🎨"),  # Arts & Culture
+]
+LIFE_MAX_PAGES = 3
+LIFE_MAX_KM = float(os.environ.get("LIFE_MAX_KM", "25"))  # SF, Oakland, Berkeley
+LIFE_WINDOW_DAYS = int(os.environ.get("LIFE_WINDOW_DAYS", "10"))
+LIFE_MAX = int(os.environ.get("LIFE_MAX", "6"))
+# Listed first whatever the category: what she most wants to find.
+LIFE_FIRST = re.compile(r"volleyball|soccer|football|futsal|pick-?up|"
+                        r"meet new people|make friends", re.I)
+LIFE_FIRST_MAX = 2  # so the section isn't all soccer
+# Tech networking in a lifestyle costume; the tech section already covers it.
+LIFE_SKIP = re.compile(r"mixer|happy hour|networking|pitch|demo day|webinar", re.I)
+
+
+def fetch_life_events(skip_seen=True, now=None, exclude=()):
+    """New in-person events near SF from the non-tech categories.
+
+    `exclude` takes ids already picked by the tech section so nothing shows twice.
+    """
+    now = now or datetime.now(timezone.utc)
+    until = now + timedelta(days=LIFE_WINDOW_DAYS)
+    seen = (set(load_seen()) if skip_seen else set()) | set(exclude)
+
+    # Recurring events (a weekly soccer game) get a new id each week; remember the
+    # name too so a series is offered once, not every week.
+    picks, names = {}, set()
+    for rank, (cat, emoji) in enumerate(LIFE_SOURCES):
+        try:
+            entries = _fetch_source({"discover_category_api_id": cat}, until,
+                                    max_pages=LIFE_MAX_PAGES)
+        except (urllib.error.URLError, json.JSONDecodeError, KeyError, ValueError) as e:
+            print(f"[luma-life] {cat} failed: {e}", file=sys.stderr)
+            continue
+        for entry in sorted(entries, key=_start):
+            event = entry["event"]
+            event_id = event["api_id"]
+            name_key = _name_key(event.get("name") or "")
+            if (event_id in seen or name_key in seen or event_id in picks or name_key in names
+                    or event.get("location_type") != "offline"):
+                continue
+            if not now <= _start(entry) <= until:
+                continue
+            coord = event.get("coordinate")
+            if not coord or _distance_km(coord) > LIFE_MAX_KM:
+                continue
+            host = (entry.get("calendar") or {}).get("name") or ""
+            text = f"{event.get('name', '')} | {host}"
+            if LIFE_SKIP.search(text):
+                continue
+            e = _clean(entry, [])
+            e.update(emoji=emoji, rank=rank, name_key=name_key,
+                     first=bool(LIFE_FIRST.search(text)))
+            picks[event_id] = e
+            names.add(name_key)
+
+    # The sports she's looking for first (capped), then one per category in turn,
+    # soonest first within each, until the section is full.
+    chosen = [e for e in sorted(picks.values(), key=lambda e: e["start"]) if e["first"]]
+    chosen = chosen[:LIFE_FIRST_MAX]
+    by_cat = {}
+    for e in sorted(picks.values(), key=lambda e: (e["rank"], e["start"])):
+        if e not in chosen:
+            by_cat.setdefault(e["rank"], []).append(e)
+    while len(chosen) < LIFE_MAX and any(by_cat.values()):
+        for rank in sorted(by_cat):
+            if by_cat[rank] and len(chosen) < LIFE_MAX:
+                chosen.append(by_cat[rank].pop(0))
+    return sorted(chosen, key=lambda e: e["start"])
+
+
+def _name_key(name):
+    return "name:" + re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+
+
+def mark_life_seen(events):
+    """Like mark_seen, but also records each event's name (see fetch_life_events)."""
+    mark_seen([{"id": x} for e in events for x in (e["id"], e["name_key"])])
+
+
+def format_life_html(events):
+    import html
+
+    def esc(s):
+        return html.escape(str(s))
+
+    lines = ["<b>🌿 Life in SF on Luma</b>"]
+    for e in events:
+        local = e["start"].astimezone(ZoneInfo(e["timezone"]))
+        clock = local.strftime("%-I:%M%p").replace(":00", "").lower()
+        meta = [f'{local.strftime("%a %b %-d")}, {clock}', e["city"], e["emoji"]]
+        lines.append(f'• <a href="{esc(e["url"])}">{esc(e["name"])}</a>')
+        lines.append(f'  <i>{esc(" · ".join(m for m in meta if m))}</i>')
+    return lines
+
 if __name__ == "__main__":
     # Manual check, ignores the seen-cache: python3 events.py
     found = fetch_events(skip_seen=False)
     print(f"{len(found)} event(s)\n")
     print("\n".join(format_events_html(found)))
+    life = fetch_life_events(skip_seen=False, exclude=[e["id"] for e in found])
+    print(f"\n{len(life)} life event(s)\n")
+    print("\n".join(format_life_html(life)))
