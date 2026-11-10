@@ -2,8 +2,10 @@
 
 Sends you a Telegram message every morning with:
 
-- 🧠 The **top LessWrong post** of the last 24 hours (highest karma)
-- 🍊 The **top 5 Hacker News** stories right now
+- 🧭 **One read or talk of the day** from people worth listening to: a new Paul Graham
+  essay when there is one, otherwise LessWrong's top post or a talk from a few YouTube
+  channels (Anthropic, Karpathy, Dwarkesh, YC, Latent Space, AI Engineer), with a
+  **Distill** button
 - 📄 **One paper of the day**: a heavily cited, peer-reviewed linear algebra paper with a
   one-line summary, rotating through five topic buckets (numerical, ML, graphics,
   quantum, theory)
@@ -89,6 +91,30 @@ the cron was `0 13 * * *` (6 AM), runs in October 2026 started anywhere from 16:
 19:40 UTC, so the digest arrived mid-morning. Starting early and off the top of the
 hour (when the queue is busiest) means it is waiting when you wake up. If you ever
 need exact timing, a tiny cloud VM with real cron is the alternative.
+
+## The read / talk of the day
+
+One item a day replaces what used to be the top LessWrong post plus five Hacker News
+stories: fewer headlines, more that's worth keeping. `reads.py` picks it:
+
+1. **A new Paul Graham essay** always wins. paulgraham.com has no dates or feed, so a
+   slug at the top of `articles.html` that isn't in `.seen_reads.json` counts as new.
+   On a cold cache the newest essay is sent once and the back catalogue is marked read.
+2. Otherwise even days are a **talk**, odd days a **LessWrong post**, each falling back
+   to the other. Talks come from the channels in `CHANNELS` (free YouTube RSS, last 14
+   days), ranked by views relative to the channel's own median, with Shorts skipped
+   (`/shorts/<id>` answers 200 only for a Short). LessWrong needs ≥100 karma in the
+   last 4 days.
+
+**Distill** (handled by `listener.py` on the laptop) fetches the essay text, the
+LessWrong post body, or the talk's English captions (via `yt-dlp`, `brew install
+yt-dlp`), then replies with the 3-5 claims worth keeping, one push-back, and **one
+question** to answer in your own words. Reply to that message and the answer is
+appended to the vault's `Journal/Reads.md` (`READS_LOG` in `.env` to move it).
+YouTube rate-limits caption downloads (429); the listener retries once, then distills
+from the video description and says so.
+
+Preview the pick without sending: `python3 reads.py`.
 
 ## The linear algebra section
 
@@ -278,21 +304,18 @@ instead: `python3 listener.py`.
 ### Morning paper page
 
 Each morning the digest pins its message. The listener checks that pin every
-10 minutes; when a new Paper of the Day appears it builds a clean, phone-sized
+10 minutes; when a new Paper of the Day appears it builds a phone-sized, ink-style
 explainer page (`paper_page_style.md`) into the portfolio's `public/learning/`,
 adds a Notebook card tagged "paper of the day", commits just those two files,
-pushes, and sends you the link. Concepts in `known_concepts.md` (plus the
-titles of your vault concept notes) are only recapped; anything else the paper
-needs is explained with a small worked example. If the portfolio has unpushed
+pushes, and sends you the link. If the portfolio has unpushed
 commits of yours it sends the page as a file with a Push button instead.
 `DAILY_PAGE=0` in `.env` turns it off. The laptop has to be awake: if it's
 asleep, the page is built when it wakes.
 
 ## Customizing
 
-- **More/fewer HN stories:** change `HN_COUNT` in `.github/workflows/digest.yml`.
-- **Different LessWrong pick:** edit `fetch_top_lesswrong_post` in `digest.py` (the
-  GraphQL `view` term — `"top"`, `"new"`, `"curated"` — controls the selection).
+- **Different people / channels:** edit `CHANNELS` in `reads.py` (channel id from the
+  `"externalId"` on the channel's page). `LW_MIN_KARMA` sets the LessWrong bar.
 - **Different time:** edit the `cron` line. Format is `minute hour day month weekday`, UTC.
 
 ## License

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Send a daily digest to Telegram: top LessWrong post, Hacker News stories,
-one heavily cited linear algebra paper from Semantic Scholar, and new Luma events and jobs (each
-only when there are some).
+"""Send a daily digest to Telegram: one Read/Talk of the Day (Paul Graham, LessWrong,
+or a talk from a few YouTube channels; see reads.py), one heavily cited linear algebra
+paper from Semantic Scholar, and new Luma events and jobs (each only when there are some).
 
 Reads these values from the environment:
   TELEGRAM_BOT_TOKEN  - from @BotFather
   TELEGRAM_CHAT_ID     - your chat with the bot
-  HN_COUNT             - how many HN stories to include (optional, default 5)
   S2_API_KEY           - Semantic Scholar key (optional but strongly recommended;
                          the anonymous tier is heavily rate-limited)
 
@@ -18,18 +17,14 @@ import os
 import sys
 import html
 import urllib.request
-import urllib.error
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from events import fetch_events, format_events_html, fetch_life_events, format_life_html, mark_life_seen, mark_seen as mark_events_seen
 from partiful import fetch_partiful, format_partiful_html, mark_seen as mark_partiful_seen
 from jobs import fetch_jobs, format_jobs_html, mark_seen as mark_jobs_seen
 from linalg import fetch_linalg_papers, format_papers_html
-
-LESSWRONG_GRAPHQL = "https://www.lesswrong.com/graphql"
-HN_TOPSTORIES = "https://hacker-news.firebaseio.com/v0/topstories.json"
-HN_ITEM = "https://hacker-news.firebaseio.com/v0/item/{}.json"
+from reads import fetch_read, format_read_html, mark_seen as mark_read_seen
 
 USER_AGENT = "daily-digest-bot/1.0 (+https://github.com/)"
 TIMEOUT = 30
@@ -45,99 +40,7 @@ def _get(url, data=None, headers=None):
         return resp.read().decode("utf-8")
 
 
-def fetch_top_lesswrong_post(hours=24):
-    """Return the highest-karma LessWrong post published in the last `hours`.
-
-    Falls back to the single most recent post if nothing falls inside the window
-    (e.g. a quiet day). Returns a dict {title, url, karma, author} or None.
-    """
-    after = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-    # Sort by top within a recent window; grab a handful so we can still pick
-    # something sensible if the window is sparse.
-    query = """
-    query RecentTop($after: String) {
-      posts(input: {terms: {view: "top", after: $after, limit: 20}}) {
-        results {
-          title
-          pageUrl
-          baseScore
-          postedAt
-          user { displayName }
-        }
-      }
-    }
-    """
-    payload = json.dumps({"query": query, "variables": {"after": after}}).encode("utf-8")
-    try:
-        raw = _get(LESSWRONG_GRAPHQL, data=payload,
-                   headers={"Content-Type": "application/json"})
-        results = json.loads(raw)["data"]["posts"]["results"]
-    except (urllib.error.URLError, KeyError, json.JSONDecodeError) as e:
-        print(f"[lesswrong] fetch failed: {e}", file=sys.stderr)
-        return None
-
-    if not results:
-        # Quiet day inside the window — fall back to the most recent posts overall.
-        results = _fetch_recent_lesswrong_fallback()
-        if not results:
-            return None
-
-    top = max(results, key=lambda p: p.get("baseScore") or 0)
-    return {
-        "title": top.get("title") or "(untitled)",
-        "url": top.get("pageUrl") or "https://www.lesswrong.com",
-        "karma": top.get("baseScore") or 0,
-        "author": (top.get("user") or {}).get("displayName") or "unknown",
-    }
-
-
-def _fetch_recent_lesswrong_fallback():
-    query = """
-    query Recent {
-      posts(input: {terms: {view: "new", limit: 10}}) {
-        results { title pageUrl baseScore postedAt user { displayName } }
-      }
-    }
-    """
-    payload = json.dumps({"query": query}).encode("utf-8")
-    try:
-        raw = _get(LESSWRONG_GRAPHQL, data=payload,
-                   headers={"Content-Type": "application/json"})
-        return json.loads(raw)["data"]["posts"]["results"]
-    except (urllib.error.URLError, KeyError, json.JSONDecodeError) as e:
-        print(f"[lesswrong] fallback failed: {e}", file=sys.stderr)
-        return []
-
-
-def fetch_top_hn(count=5):
-    """Return the top `count` Hacker News stories as [{title, url, hn_url, score}]."""
-    try:
-        ids = json.loads(_get(HN_TOPSTORIES))[:count]
-    except (urllib.error.URLError, json.JSONDecodeError) as e:
-        print(f"[hn] topstories failed: {e}", file=sys.stderr)
-        return []
-
-    stories = []
-    for item_id in ids:
-        try:
-            item = json.loads(_get(HN_ITEM.format(item_id)))
-        except (urllib.error.URLError, json.JSONDecodeError) as e:
-            print(f"[hn] item {item_id} failed: {e}", file=sys.stderr)
-            continue
-        if not item:
-            continue
-        hn_url = f"https://news.ycombinator.com/item?id={item_id}"
-        stories.append({
-            "title": item.get("title") or "(untitled)",
-            # Ask HN / text posts have no url — point at the HN discussion.
-            "url": item.get("url") or hn_url,
-            "hn_url": hn_url,
-            "score": item.get("score") or 0,
-        })
-    return stories
-
-
-def build_message(lw, hn, papers=None, events=None, jobs=None, partiful=None, life=None):
+def build_message(read, papers=None, events=None, jobs=None, partiful=None, life=None):
     """Format an HTML message for Telegram (parse_mode=HTML)."""
     def esc(s):
         return html.escape(str(s))
@@ -145,27 +48,9 @@ def build_message(lw, hn, papers=None, events=None, jobs=None, partiful=None, li
     today = datetime.now(timezone.utc).strftime("%A, %B %d")
     lines = [f"<b>📰 Daily Digest — {esc(today)}</b>", ""]
 
-    lines.append("<b>🧠 Top of LessWrong</b>")
-    if lw:
-        lines.append(
-            f'• <a href="{esc(lw["url"])}">{esc(lw["title"])}</a>\n'
-            f'  <i>{esc(lw["karma"])} karma · {esc(lw["author"])}</i>'
-        )
-    else:
-        lines.append("• (couldn't fetch a post today)")
-    lines.append("")
-
-    lines.append("<b>🍊 Hacker News</b>")
-    if hn:
-        for s in hn:
-            lines.append(
-                f'• <a href="{esc(s["url"])}">{esc(s["title"])}</a> '
-                f'(<a href="{esc(s["hn_url"])}">{esc(s["score"])}▲</a>)'
-            )
-    else:
-        lines.append("• (couldn't fetch stories today)")
-
-    lines.append("")
+    if read:
+        lines.extend(format_read_html(read))
+        lines.append("")
     lines.extend(format_papers_html(papers or []))
 
     # No placeholder line here: a day without new events just has no section.
@@ -266,33 +151,36 @@ def main():
         print("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID", file=sys.stderr)
         sys.exit(1)
 
-    hn_count = int(os.environ.get("HN_COUNT", "5"))
     # Rotates which topics get queried, so a stable high-citation corpus still
     # yields a different slice each day.
     day_index = int(datetime.now(timezone.utc).strftime("%j"))
 
-    lw = fetch_top_lesswrong_post()
-    hn = fetch_top_hn(hn_count)
+    read = fetch_read(day_index)
     papers = fetch_linalg_papers(day_index=day_index)
     events = fetch_events()
     life = fetch_life_events(exclude=[e["id"] for e in events])
     partiful = fetch_partiful()
     jobs = fetch_jobs()
 
-    if lw is None and not hn and not papers:
+    if read is None and not papers:
         print("All sources failed — not sending an empty digest.", file=sys.stderr)
         sys.exit(1)
 
-    message = build_message(lw, hn, papers, events, jobs, partiful, life)
+    message = build_message(read, papers, events, jobs, partiful, life)
     # Tapping this is picked up by listener.py on the laptop, which reads the PDF and
     # replies with a linear-algebra-first summary. callback_data caps at 64 bytes;
     # an S2 paperId is 40 hex chars.
     buttons = [[{"text": "🔍 Deep-dive the paper", "callback_data": f"p:{p['s2_id']}"}]
                for p in (papers or [])[:1] if p.get("s2_id")]
-    resp = send_telegram(token, chat_id, message, buttons=buttons or None)
+    # Distill: listener.py fetches the essay text / talk transcript and replies with the
+    # few claims that matter plus one question for her to answer in her own words.
+    distill = [[{"text": "🧭 Distill the " + ("talk" if read["kind"] == "talk" else "read"),
+                 "callback_data": f"t:{read['key']}"}]] if read else []
+    resp = send_telegram(token, chat_id, message, buttons=(distill + buttons) or None)
     if buttons:
         pin_message(token, chat_id, resp["result"]["message_id"])
     # Only after a successful send, so a failed run doesn't swallow events or jobs.
+    mark_read_seen(read)
     mark_events_seen(events)
     mark_life_seen(life)
     mark_partiful_seen(partiful)

@@ -17,6 +17,7 @@ env/
 .seen_events.json
 .seen_jobs.json
 .seen_partiful.json
+.seen_reads.json
 
 # OS / editor cruft
 .DS_Store

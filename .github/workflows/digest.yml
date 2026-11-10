@@ -56,11 +56,19 @@ jobs:
           key: partiful-cache-${{ github.run_id }}
           restore-keys: partiful-cache-
 
+      # Same reason again: its own entry. Holds the read/talk keys already sent and
+      # the banked Paul Graham back catalogue.
+      - name: Restore seen reads
+        uses: actions/cache@v4
+        with:
+          path: .seen_reads.json
+          key: reads-cache-${{ github.run_id }}
+          restore-keys: reads-cache-
+
       - name: Send digest
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          HN_COUNT: "5"
           # Optional but strongly recommended — see the README. Without it the
           # bot shares a global anonymous quota and most requests get 429'd.
           S2_API_KEY: ${{ secrets.S2_API_KEY }}
