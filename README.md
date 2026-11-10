@@ -13,7 +13,9 @@ Sends you a Telegram message every morning with:
   graphics, GNC, optimization, formal methods, crypto), from company job boards and
   HN "Who is hiring?", also only when there are new ones
 
-Runs on **GitHub Actions** (free, always-on — no laptop or server needed). Pure Python
+Runs on **GitHub Actions** (free, always-on — no laptop or server needed). Replying to the
+bot (paper deep-dives, concept explanations, pushing pages to nazym.space) is handled by
+`listener.py` on the laptop; see [Talking back](#talking-back-the-interactive-listener). Pure Python
 standard library, so there's nothing to `pip install`.
 
 ## Requirements
@@ -239,6 +241,52 @@ Preview without sending (ignores the seen-cache; raise the caps to see everythin
 ```bash
 JOBS_MAX=200 JOBS_MAX_HN=50 python3 jobs.py
 ```
+
+## Talking back: the interactive listener
+
+`listener.py` makes the bot answer messages. It runs **on the laptop**, not in CI,
+because every reply is written by headless Claude Code (`claude -p`), which runs on the
+Claude subscription instead of a paid API key. The morning digest stays on Actions.
+
+| You send | It does |
+| --- | --- |
+| tap **🔍 Deep-dive the paper** under the morning paper | downloads the PDF and summarises it with the linear algebra up front |
+| an arXiv link or id, or `/paper <id>` | same, for any paper |
+| any text, or `/explain <concept>` | explains it with a worked numeric example, linear algebra first |
+| **🎨 Make a page** under any answer | draws a hand-drawn explainer into the portfolio's `public/learning/`, adds a Notebook card in `src/notebook.js`, and sends you the HTML to preview |
+| **🚀 Push to nazym.space** | commits only those two files and pushes (Vercel deploys) |
+| **🗑 Discard** | reverts both files |
+
+**Setup:** copy `.env.example` to `.env` with the same `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` as the GitHub secrets (plus `S2_API_KEY` if you have one), then
+run `./install_listener.sh`. launchd starts it at login and restarts it if it dies.
+Logs: `tail -f ~/Library/Logs/digest-listener.log`. To try it in the foreground
+instead: `python3 listener.py`.
+
+**How it behaves:**
+- It only answers `TELEGRAM_CHAT_ID`; everyone else is ignored.
+- While the laptop sleeps, Telegram holds your messages (up to 24h) and they're
+  answered on wake.
+- **Safety:** the step that reads the paper has only the `Read` tool. The page step
+  can `Write`/`Edit` but has no shell. Git runs in Python, and a push is refused if
+  anything other than the two expected paths changed. The build is also refused if
+  `src/notebook.js` already has uncommitted edits.
+- Your user settings (hooks, MCP) are skipped with `--setting-sources ""`, so ntfy
+  doesn't buzz for every call.
+- State (job records, downloaded PDFs) lives in `.listener/`, which is gitignored.
+
+### Morning paper page
+
+Each morning the digest pins its message. The listener checks that pin every
+10 minutes; when a new Paper of the Day appears it builds a clean, phone-sized
+explainer page (`paper_page_style.md`) into the portfolio's `public/learning/`,
+adds a Notebook card tagged "paper of the day", commits just those two files,
+pushes, and sends you the link. Concepts in `known_concepts.md` (plus the
+titles of your vault concept notes) are only recapped; anything else the paper
+needs is explained with a small worked example. If the portfolio has unpushed
+commits of yours it sends the page as a file with a Push button instead.
+`DAILY_PAGE=0` in `.env` turns it off. The laptop has to be awake: if it's
+asleep, the page is built when it wakes.
 
 ## Customizing
 

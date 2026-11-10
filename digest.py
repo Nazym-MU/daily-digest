@@ -22,7 +22,8 @@ import urllib.error
 import json
 from datetime import datetime, timedelta, timezone
 
-from events import fetch_events, format_events_html, mark_seen as mark_events_seen
+from events import fetch_events, format_events_html, fetch_life_events, format_life_html, mark_life_seen, mark_seen as mark_events_seen
+from partiful import fetch_partiful, format_partiful_html, mark_seen as mark_partiful_seen
 from jobs import fetch_jobs, format_jobs_html, mark_seen as mark_jobs_seen
 from linalg import fetch_linalg_papers, format_papers_html
 
@@ -136,7 +137,7 @@ def fetch_top_hn(count=5):
     return stories
 
 
-def build_message(lw, hn, papers=None, events=None, jobs=None):
+def build_message(lw, hn, papers=None, events=None, jobs=None, partiful=None, life=None):
     """Format an HTML message for Telegram (parse_mode=HTML)."""
     def esc(s):
         return html.escape(str(s))
@@ -171,6 +172,14 @@ def build_message(lw, hn, papers=None, events=None, jobs=None):
     if events:
         lines.append("")
         lines.extend(format_events_html(events))
+
+    if life:
+        lines.append("")
+        lines.extend(format_life_html(life))
+
+    if partiful:
+        lines.append("")
+        lines.extend(format_partiful_html(partiful))
 
     if jobs:
         lines.append("")
@@ -211,22 +220,43 @@ def split_message(text, limit=TELEGRAM_LIMIT):
     return chunks
 
 
-def send_telegram(token, chat_id, text):
+def send_telegram(token, chat_id, text, buttons=None):
+    """`buttons` (an inline keyboard) goes on the last chunk only."""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     resp = None
-    for chunk in split_message(text):
-        payload = urllib.parse.urlencode({
+    chunks = split_message(text)
+    for i, chunk in enumerate(chunks):
+        fields = {
             "chat_id": chat_id,
             "text": chunk,
             "parse_mode": "HTML",
             "disable_web_page_preview": "true",
-        }).encode("utf-8")
+        }
+        if buttons and i == len(chunks) - 1:
+            fields["reply_markup"] = json.dumps({"inline_keyboard": buttons})
+        payload = urllib.parse.urlencode(fields).encode("utf-8")
         raw = _get(url, data=payload,
                    headers={"Content-Type": "application/x-www-form-urlencoded"})
         resp = json.loads(raw)
         if not resp.get("ok"):
             raise RuntimeError(f"Telegram API error: {resp}")
     return resp
+
+
+def pin_message(token, chat_id, message_id):
+    """Pin the paper message silently. listener.py on the laptop reads the pin
+    (bots can't read their own messages) to build the morning paper page.
+    Best effort: a failed pin must not fail the digest."""
+    base = f"https://api.telegram.org/bot{token}"
+    hdr = {"Content-Type": "application/x-www-form-urlencoded"}
+    try:
+        _get(f"{base}/unpinAllChatMessages",
+             data=urllib.parse.urlencode({"chat_id": chat_id}).encode(), headers=hdr)
+        _get(f"{base}/pinChatMessage", headers=hdr, data=urllib.parse.urlencode({
+            "chat_id": chat_id, "message_id": message_id, "disable_notification": "true",
+        }).encode())
+    except Exception as e:  # noqa: BLE001
+        print(f"Pin failed: {e}", file=sys.stderr)
 
 
 def main():
@@ -245,16 +275,27 @@ def main():
     hn = fetch_top_hn(hn_count)
     papers = fetch_linalg_papers(day_index=day_index)
     events = fetch_events()
+    life = fetch_life_events(exclude=[e["id"] for e in events])
+    partiful = fetch_partiful()
     jobs = fetch_jobs()
 
     if lw is None and not hn and not papers:
         print("All sources failed — not sending an empty digest.", file=sys.stderr)
         sys.exit(1)
 
-    message = build_message(lw, hn, papers, events, jobs)
-    send_telegram(token, chat_id, message)
+    message = build_message(lw, hn, papers, events, jobs, partiful, life)
+    # Tapping this is picked up by listener.py on the laptop, which reads the PDF and
+    # replies with a linear-algebra-first summary. callback_data caps at 64 bytes;
+    # an S2 paperId is 40 hex chars.
+    buttons = [[{"text": "🔍 Deep-dive the paper", "callback_data": f"p:{p['s2_id']}"}]
+               for p in (papers or [])[:1] if p.get("s2_id")]
+    resp = send_telegram(token, chat_id, message, buttons=buttons or None)
+    if buttons:
+        pin_message(token, chat_id, resp["result"]["message_id"])
     # Only after a successful send, so a failed run doesn't swallow events or jobs.
     mark_events_seen(events)
+    mark_life_seen(life)
+    mark_partiful_seen(partiful)
     mark_jobs_seen(jobs)
     print("Digest sent.")
 
