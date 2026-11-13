@@ -312,6 +312,42 @@ def arxiv_meta(arxiv_id):
             "externalIds": {"ArXiv": arxiv_id}}
 
 
+def arxiv_by_title(title):
+    """arXiv id for an exact-title match, or None. Used when S2 is rate-limited and the
+    button only carried an S2 id."""
+    import xml.etree.ElementTree as ET
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    norm = lambda t: re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
+    q = urllib.parse.quote(f'ti:"{re.sub(r"[^A-Za-z0-9 ]+", " ", title)}"')
+    try:
+        root = ET.fromstring(http(f"https://export.arxiv.org/api/query?search_query={q}&max_results=5", timeout=30))
+    except Exception:  # noqa: BLE001
+        return None
+    for entry in root.findall("a:entry", ns):
+        if norm(entry.findtext("a:title", "", ns)) == norm(title):
+            m = re.search(r"abs/([^v\s]+(?:/\d+)?)", entry.findtext("a:id", "", ns))
+            if m:
+                return m.group(1)
+    return None
+
+
+def arxiv_from_message(msg):
+    """The paper's arXiv id from a digest message: its link if it points at arXiv,
+    else an arXiv title search on the line under 'Paper of the Day'."""
+    if not msg:
+        return None
+    for ent in msg.get("entities") or []:
+        m = re.search(r"arxiv\.org/(?:abs|pdf)/([\w.\-/]+?)(?:v\d+)?$", ent.get("url") or "")
+        if m:
+            return m.group(1)
+    lines = (msg.get("text") or msg.get("caption") or "").splitlines()
+    for i, line in enumerate(lines):
+        if "Paper of the Day" in line and i + 1 < len(lines):
+            title = lines[i + 1].lstrip("• ").strip()
+            return arxiv_by_title(title) if title else None
+    return None
+
+
 def download_pdf(url, dest):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=90) as resp:
@@ -322,10 +358,20 @@ def download_pdf(url, dest):
     return True
 
 
-def fetch_paper(ref_kind, ref, announce=True):
-    """Metadata + PDF into a fresh work dir. Returns a dict, or None if S2 has no such paper."""
+def fetch_paper(ref_kind, ref, announce=True, msg=None):
+    """Metadata + PDF into a fresh work dir. Returns a dict, or None if the paper can't
+    be found. An "s2" ref may be "<s2_id>:<arxiv_id>" (digest buttons since 2026-11-13);
+    the arXiv id is the fallback when S2 rate-limits the laptop, which it does without
+    an API key. Older buttons fall back to the digest message itself (`msg`)."""
     arxiv_id = ref if ref_kind == "arxiv" else None
+    hint = None
+    if ref_kind == "s2":
+        ref, _, hint = ref.partition(":")
     meta = s2_paper(f"arXiv:{ref}" if arxiv_id else ref)
+    if meta is None and not arxiv_id:
+        arxiv_id = hint or arxiv_from_message(msg)
+        if arxiv_id:
+            log("s2 unavailable; using arXiv", arxiv_id)
     if meta is None and not arxiv_id:
         return None
     meta = meta or arxiv_meta(arxiv_id)
@@ -357,10 +403,11 @@ def fetch_paper(ref_kind, ref, announce=True):
             "arxiv_id": arxiv_id, "url": url, "have_pdf": have_pdf}
 
 
-def do_paper(ref_kind, ref):
-    fp = fetch_paper(ref_kind, ref)
+def do_paper(ref_kind, ref, msg=None):
+    fp = fetch_paper(ref_kind, ref, msg=msg)
     if fp is None:
-        send("Couldn't find that paper on Semantic Scholar.")
+        send("Couldn't load that paper: Semantic Scholar is rate-limiting the laptop "
+             "and I couldn't find it on arXiv either. Try again in a minute, or send me its arXiv link.")
         return
     job_id, work, title, url, have_pdf = fp["job_id"], fp["work"], fp["title"], fp["url"], fp["have_pdf"]
 
@@ -653,7 +700,7 @@ def do_daily(s2_id):
     if "src/notebook.js" in dirty_paths():
         send("☀️ Skipped today's paper page: src/notebook.js has uncommitted changes in the portfolio.")
         return
-    fp = fetch_paper("s2", s2_id, announce=False)
+    fp = fetch_paper("s2", s2_id, announce=False, msg=PINNED.get("msg"))
     if fp is None:
         log("daily: paper not found", s2_id)
         return
@@ -710,6 +757,9 @@ def do_daily(s2_id):
                                 {"text": "🗑 Discard", "callback_data": f"drop:{job_id}"}]])
 
 
+PINNED = {}
+
+
 def todays_paper_id():
     """The digest (CI) pins its message; the Deep-dive button on it carries the S2 id.
     Bots can't read their own messages, so the pin is how CI hands the id over."""
@@ -717,6 +767,7 @@ def todays_paper_id():
     pinned = chat.get("pinned_message") or {}
     if time.time() - pinned.get("date", 0) > 20 * 3600:
         return None
+    PINNED["msg"] = pinned  # do_daily's arXiv fallback reads the title/link off it
     for row in (pinned.get("reply_markup") or {}).get("inline_keyboard", []):
         for btn in row:
             data = btn.get("callback_data") or ""
@@ -790,7 +841,7 @@ def route(update):
         except RuntimeError:
             pass  # stale (laptop was asleep); the work still runs
         kind, _, arg = (cq.get("data") or "").partition(":")
-        handler = {"p": lambda: do_paper("s2", arg), "t": lambda: do_distill(arg),
+        handler = {"p": lambda: do_paper("s2", arg, cq.get("message")), "t": lambda: do_distill(arg),
                    "mk": lambda: do_make_page(arg),
                    "push": lambda: do_push(arg), "drop": lambda: do_drop(arg)}.get(kind)
         if handler:

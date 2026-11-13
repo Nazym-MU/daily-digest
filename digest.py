@@ -18,6 +18,7 @@ import sys
 import html
 import urllib.request
 import json
+import re
 from datetime import datetime, timezone
 
 from events import fetch_events, format_events_html, fetch_life_events, format_life_html, mark_life_seen, mark_seen as mark_events_seen
@@ -38,6 +39,12 @@ def _get(url, data=None, headers=None):
     req = urllib.request.Request(url, data=data, headers=hdrs)
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         return resp.read().decode("utf-8")
+
+
+def paper_callback(p):
+    m = re.search(r"arxiv\.org/abs/(\S+)$", p.get("url") or "")
+    data = f"p:{p['s2_id']}:{m.group(1)}" if m else f"p:{p['s2_id']}"
+    return data if len(data.encode()) <= 64 else f"p:{p['s2_id']}"
 
 
 def build_message(read, papers=None, events=None, jobs=None, partiful=None, life=None):
@@ -170,7 +177,9 @@ def main():
     # Tapping this is picked up by listener.py on the laptop, which reads the PDF and
     # replies with a linear-algebra-first summary. callback_data caps at 64 bytes;
     # an S2 paperId is 40 hex chars.
-    buttons = [[{"text": "🔍 Deep-dive the paper", "callback_data": f"p:{p['s2_id']}"}]
+    # "p:<s2_id>:<arxiv_id>" when the paper is on arXiv, so the listener can skip S2
+    # (which rate-limits the laptop) and still find it. Max ~60 bytes.
+    buttons = [[{"text": "🔍 Deep-dive the paper", "callback_data": paper_callback(p)}]
                for p in (papers or [])[:1] if p.get("s2_id")]
     # Distill: listener.py fetches the essay text / talk transcript and replies with the
     # few claims that matter plus one question for her to answer in her own words.
