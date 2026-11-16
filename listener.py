@@ -831,6 +831,15 @@ HELP = (
 JOBS = queue.Queue()
 
 
+def retry(rid):
+    job = RETRY.pop(rid, None)
+    if job is None:
+        send("That retry expired (the listener restarted since). Ask again and I'll redo it.")
+        return
+    send("🔄 Trying again…")
+    job()
+
+
 def route(update):
     if "callback_query" in update:
         cq = update["callback_query"]
@@ -843,7 +852,8 @@ def route(update):
         kind, _, arg = (cq.get("data") or "").partition(":")
         handler = {"p": lambda: do_paper("s2", arg, cq.get("message")), "t": lambda: do_distill(arg),
                    "mk": lambda: do_make_page(arg),
-                   "push": lambda: do_push(arg), "drop": lambda: do_drop(arg)}.get(kind)
+                   "push": lambda: do_push(arg), "drop": lambda: do_drop(arg),
+                   "retry": lambda: retry(arg)}.get(kind)
         if handler:
             JOBS.put(handler)
         return
@@ -878,6 +888,9 @@ def route(update):
     JOBS.put(lambda: do_explain(question))
 
 
+RETRY = {}  # failed jobs by short id, for the "Try again" button (lost on restart)
+
+
 def worker():
     while True:
         job = JOBS.get()
@@ -885,8 +898,13 @@ def worker():
             job()
         except Exception as e:  # noqa: BLE001 — report and keep serving
             log("job failed:", traceback.format_exc())
+            rid = secrets.token_hex(4)
+            RETRY[rid] = job
             try:
-                send(f"⚠️ That failed: {esc(str(e)[:600])}")
+                # Re-running the job starts over (the HN brief refetches the stories),
+                # which is what you want after the laptop slept mid-answer.
+                send(f"⚠️ That failed: {esc(str(e)[:600])}",
+                     buttons=[[{"text": "🔄 Try again", "callback_data": f"retry:{rid}"}]])
             except Exception:  # noqa: BLE001
                 pass
 
